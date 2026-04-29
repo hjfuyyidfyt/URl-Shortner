@@ -20,6 +20,7 @@ Fill `.env`:
 - `BOT_TOKEN`: BotFather token.
 - `DATABASE_URL`: PostgreSQL URL.
 - `STORAGE_CHANNEL_ID`: private channel numeric ID, usually starts with `-100`.
+- `ADMIN_IDS`: optional comma-separated Telegram user IDs allowed to add promo channels.
 
 Add the bot as admin in the private storage channel, then run:
 
@@ -35,6 +36,7 @@ Push this project to GitHub, create a Railway project from the repo, then add th
 - `DATABASE_URL`
 - `STORAGE_CHANNEL_ID`
 - `CODE_LENGTH` optional
+- `ADMIN_IDS` optional
 
 Railway can run it with the existing `npm start` script.
 
@@ -42,5 +44,6 @@ Railway can run it with the existing `npm start` script.
 
 - `/upload` is not required. Sending a video automatically creates a share link.
 - Bot username is detected automatically from `BOT_TOKEN`.
+- Add promo channels with `/cha https://t.me/channelname`. Use `/id` to get your Telegram user ID for `ADMIN_IDS`.
 - Telegram deep links cannot open the video directly before the user starts the bot. The link opens the bot, then the bot sends the video.
 - If a database URL or bot token was shared publicly, rotate it before deployment.

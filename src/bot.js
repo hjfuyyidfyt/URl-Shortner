@@ -1,12 +1,20 @@
 import "dotenv/config";
 import { Telegraf } from "telegraf";
 import { nanoid } from "nanoid";
-import { getVideoByCode, incrementViews, initDb, saveVideo } from "./db.js";
+import {
+  addPromoChannel,
+  getVideoByCode,
+  incrementViews,
+  initDb,
+  listPromoChannels,
+  saveVideo
+} from "./db.js";
 
 const {
   BOT_TOKEN,
   STORAGE_CHANNEL_ID,
-  CODE_LENGTH = "10"
+  CODE_LENGTH = "10",
+  ADMIN_IDS = ""
 } = process.env;
 
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is required");
@@ -15,6 +23,9 @@ if (!STORAGE_CHANNEL_ID) throw new Error("STORAGE_CHANNEL_ID is required");
 
 const bot = new Telegraf(BOT_TOKEN);
 let botUsername;
+const adminIds = ADMIN_IDS.split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
 
 function makeCode() {
   return `v_${nanoid(Number(CODE_LENGTH))}`;
@@ -51,6 +62,38 @@ function isChatNotFound(error) {
     && error?.response?.description?.toLowerCase().includes("chat not found");
 }
 
+function isAdmin(userId) {
+  return adminIds.length === 0 || adminIds.includes(String(userId));
+}
+
+function normalizeTelegramUrl(rawUrl) {
+  const url = rawUrl.trim();
+
+  if (/^https:\/\/t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(url)) return url;
+  if (/^t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(url)) return `https://${url}`;
+  if (/^@[a-zA-Z0-9_]{5,32}$/u.test(url)) return `https://t.me/${url.slice(1)}`;
+
+  return null;
+}
+
+async function sendPromoChannels(ctx) {
+  const channels = await listPromoChannels();
+  if (channels.length === 0) return;
+
+  const links = channels.map((channel, index) => `${index + 1}. ${channel.url}`).join("\n");
+
+  await ctx.reply(
+    [
+      "You can see more videos like this:",
+      "आप इस तरह के और वीडियो देख सकते हैं:",
+      "আপনি এমন আরও ভিডিও দেখতে পারেন:",
+      "Вы можете посмотреть больше таких видео:",
+      "",
+      links
+    ].join("\n")
+  );
+}
+
 bot.start(async (ctx) => {
   const payload = ctx.startPayload;
 
@@ -70,7 +113,36 @@ bot.start(async (ctx) => {
     video.storage_chat_id,
     Number(video.storage_message_id)
   );
+  await sendPromoChannels(ctx);
   await incrementViews(payload);
+});
+
+bot.command("id", async (ctx) => {
+  await ctx.reply(`Your Telegram user ID: ${ctx.from.id}`);
+});
+
+bot.command("cha", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("You are not allowed to add promo channels.");
+    return;
+  }
+
+  const rawUrl = ctx.message.text.split(/\s+/u)[1];
+
+  if (!rawUrl) {
+    await ctx.reply("Usage: /cha https://t.me/channelname");
+    return;
+  }
+
+  const url = normalizeTelegramUrl(rawUrl);
+
+  if (!url) {
+    await ctx.reply("Please send a valid Telegram channel URL, like https://t.me/channelname");
+    return;
+  }
+
+  await addPromoChannel(url, ctx.from.id);
+  await ctx.reply(`Channel added:\n${url}`);
 });
 
 bot.command("channelcheck", async (ctx) => {

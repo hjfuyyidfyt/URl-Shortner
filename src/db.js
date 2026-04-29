@@ -29,6 +29,16 @@ export async function initDb() {
 
     create index if not exists videos_uploader_id_idx on videos (uploader_id);
     create index if not exists videos_created_at_idx on videos (created_at desc);
+
+    create table if not exists promo_channels (
+      id bigserial primary key,
+      url text not null unique,
+      added_by bigint not null,
+      is_active boolean not null default true,
+      created_at timestamptz not null default now()
+    );
+
+    create index if not exists promo_channels_active_idx on promo_channels (is_active, created_at);
   `);
 }
 
@@ -82,4 +92,26 @@ export async function getVideoByCode(code) {
 
 export async function incrementViews(code) {
   await pool.query("update videos set views = views + 1 where code = $1", [code]);
+}
+
+export async function addPromoChannel(url, addedBy) {
+  const result = await pool.query(
+    `
+      insert into promo_channels (url, added_by)
+      values ($1, $2)
+      on conflict (url) do update set is_active = true
+      returning *
+    `,
+    [url, addedBy]
+  );
+
+  return result.rows[0];
+}
+
+export async function listPromoChannels() {
+  const result = await pool.query(
+    "select url from promo_channels where is_active = true order by created_at asc"
+  );
+
+  return result.rows;
 }
