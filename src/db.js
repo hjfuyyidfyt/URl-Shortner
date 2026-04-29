@@ -32,11 +32,14 @@ export async function initDb() {
 
     create table if not exists promo_channels (
       id bigserial primary key,
+      name text,
       url text not null unique,
       added_by bigint not null,
       is_active boolean not null default true,
       created_at timestamptz not null default now()
     );
+
+    alter table promo_channels add column if not exists name text;
 
     create index if not exists promo_channels_active_idx on promo_channels (is_active, created_at);
   `);
@@ -94,15 +97,17 @@ export async function incrementViews(code) {
   await pool.query("update videos set views = views + 1 where code = $1", [code]);
 }
 
-export async function addPromoChannel(url, addedBy) {
+export async function addPromoChannel(url, name, addedBy) {
   const result = await pool.query(
     `
-      insert into promo_channels (url, added_by)
-      values ($1, $2)
-      on conflict (url) do update set is_active = true
+      insert into promo_channels (url, name, added_by)
+      values ($1, $2, $3)
+      on conflict (url) do update set
+        name = excluded.name,
+        is_active = true
       returning *
     `,
-    [url, addedBy]
+    [url, name, addedBy]
   );
 
   return result.rows[0];
@@ -110,7 +115,7 @@ export async function addPromoChannel(url, addedBy) {
 
 export async function listPromoChannels() {
   const result = await pool.query(
-    "select url from promo_channels where is_active = true order by created_at asc"
+    "select url, name from promo_channels where is_active = true order by created_at asc"
   );
 
   return result.rows;

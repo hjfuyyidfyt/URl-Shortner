@@ -26,7 +26,7 @@ let botUsername;
 const adminIds = ADMIN_IDS.split(",")
   .map((id) => id.trim())
   .filter(Boolean);
-const pendingChannelUsers = new Set();
+const pendingChannelUsers = new Map();
 
 function makeCode() {
   return `v_${nanoid(Number(CODE_LENGTH))}`;
@@ -78,34 +78,49 @@ function normalizeTelegramUrl(rawUrl) {
   return null;
 }
 
-async function addChannelFromText(ctx, rawChannel) {
+function getChannelFallbackName(url) {
+  return url.replace("https://t.me/", "@");
+}
+
+async function prepareChannelFromText(ctx, rawChannel) {
   const url = normalizeTelegramUrl(rawChannel);
 
   if (!url) {
     await ctx.reply("Please send a valid channel, like t.me/channelname, @channelname, or channelname.");
-    return false;
+    return null;
   }
 
-  await addPromoChannel(url, ctx.from.id);
-  await ctx.reply(`Channel added:\n${url}`);
-  return true;
+  return url;
+}
+
+async function savePromoChannel(ctx, url, rawName) {
+  const name = rawName.trim().slice(0, 64) || getChannelFallbackName(url);
+
+  await addPromoChannel(url, name, ctx.from.id);
+  await ctx.reply(`✅ Channel added:\n${name}\n${url}`);
 }
 
 async function sendPromoChannels(ctx) {
   const channels = await listPromoChannels();
   if (channels.length === 0) return;
 
-  const links = channels.map((channel, index) => `${index + 1}. ${channel.url}`).join("\n");
+  const buttons = channels.map((channel) => ([{
+    text: channel.name || getChannelFallbackName(channel.url),
+    url: channel.url
+  }]));
 
   await ctx.reply(
     [
-      "You can see more videos like this:",
-      "आप इस तरह के और वीडियो देख सकते हैं:",
-      "আপনি এমন আরও ভিডিও দেখতে পারেন:",
-      "Вы можете посмотреть больше таких видео:",
-      "",
-      links
-    ].join("\n")
+      "🎬 You can see more videos like this:",
+      "🇧🇩 আপনি এমন আরও ভিডিও দেখতে পারেন:",
+      "🇷🇺 Вы можете посмотреть больше таких видео:",
+      "🇮🇳 आप इस तरह के और वीडियो देख सकते हैं:"
+    ].join("\n"),
+    {
+      reply_markup: {
+        inline_keyboard: buttons
+      }
+    }
   );
 }
 
@@ -145,12 +160,16 @@ bot.command("cha", async (ctx) => {
   const rawChannel = ctx.message.text.replace(/^\/cha(@\w+)?\s*/u, "").trim();
 
   if (!rawChannel) {
-    pendingChannelUsers.add(ctx.from.id);
-    await ctx.reply("Send a channel: t.me/channelname, @channelname, or channelname");
+    pendingChannelUsers.set(ctx.from.id, { step: "channel" });
+    await ctx.reply("🔗 Send a channel: t.me/channelname, @channelname, or channelname");
     return;
   }
 
-  await addChannelFromText(ctx, rawChannel);
+  const url = await prepareChannelFromText(ctx, rawChannel);
+  if (!url) return;
+
+  pendingChannelUsers.set(ctx.from.id, { step: "name", url });
+  await ctx.reply("🏷️ Now send the button name for this channel.");
 });
 
 bot.command("channelcheck", async (ctx) => {
@@ -171,7 +190,9 @@ bot.command("channelcheck", async (ctx) => {
 });
 
 bot.on("message", async (ctx) => {
-  if (pendingChannelUsers.has(ctx.from.id)) {
+  const pendingChannel = pendingChannelUsers.get(ctx.from.id);
+
+  if (pendingChannel) {
     if (!isAdmin(ctx.from.id)) {
       pendingChannelUsers.delete(ctx.from.id);
       await ctx.reply("You are not allowed to add promo channels.");
@@ -179,12 +200,21 @@ bot.on("message", async (ctx) => {
     }
 
     if (!ctx.message.text) {
-      await ctx.reply("Please send the channel as text: t.me/channelname, @channelname, or channelname");
+      await ctx.reply("Please send text only.");
       return;
     }
 
-    const added = await addChannelFromText(ctx, ctx.message.text);
-    if (added) pendingChannelUsers.delete(ctx.from.id);
+    if (pendingChannel.step === "channel") {
+      const url = await prepareChannelFromText(ctx, ctx.message.text);
+      if (!url) return;
+
+      pendingChannelUsers.set(ctx.from.id, { step: "name", url });
+      await ctx.reply("🏷️ Now send the button name for this channel.");
+      return;
+    }
+
+    await savePromoChannel(ctx, pendingChannel.url, ctx.message.text);
+    pendingChannelUsers.delete(ctx.from.id);
     return;
   }
 
