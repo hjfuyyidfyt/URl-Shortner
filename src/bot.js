@@ -46,6 +46,11 @@ function shareUrl(code) {
   return `https://t.me/${botUsername}?start=${encodeURIComponent(code)}`;
 }
 
+function isChatNotFound(error) {
+  return error?.response?.error_code === 400
+    && error?.response?.description?.toLowerCase().includes("chat not found");
+}
+
 bot.start(async (ctx) => {
   const payload = ctx.startPayload;
 
@@ -68,6 +73,23 @@ bot.start(async (ctx) => {
   await incrementViews(payload);
 });
 
+bot.command("channelcheck", async (ctx) => {
+  try {
+    const chat = await ctx.telegram.getChat(STORAGE_CHANNEL_ID);
+    const title = chat.title ?? chat.username ?? STORAGE_CHANNEL_ID;
+    await ctx.reply(`Storage channel OK: ${title}`);
+  } catch (error) {
+    if (isChatNotFound(error)) {
+      await ctx.reply(
+        "Storage channel not found. Add this bot as admin in the private channel and check STORAGE_CHANNEL_ID."
+      );
+      return;
+    }
+
+    throw error;
+  }
+});
+
 bot.on("message", async (ctx) => {
   const incomingVideo = getIncomingVideo(ctx.message);
 
@@ -77,11 +99,24 @@ bot.on("message", async (ctx) => {
   }
 
   const code = makeCode();
-  const copied = await ctx.telegram.copyMessage(
-    STORAGE_CHANNEL_ID,
-    ctx.chat.id,
-    ctx.message.message_id
-  );
+  let copied;
+
+  try {
+    copied = await ctx.telegram.copyMessage(
+      STORAGE_CHANNEL_ID,
+      ctx.chat.id,
+      ctx.message.message_id
+    );
+  } catch (error) {
+    if (isChatNotFound(error)) {
+      await ctx.reply(
+        "Upload failed: storage channel not found. Add this bot as admin in the private channel and check STORAGE_CHANNEL_ID."
+      );
+      return;
+    }
+
+    throw error;
+  }
 
   await saveVideo({
     code,
