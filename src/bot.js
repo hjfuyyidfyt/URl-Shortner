@@ -6,8 +6,11 @@ import {
   getVideoByCode,
   incrementViews,
   initDb,
+  listAllPromoChannels,
   listPromoChannels,
-  saveVideo
+  removePromoChannel,
+  saveVideo,
+  togglePromoChannel
 } from "./db.js";
 
 const {
@@ -67,13 +70,13 @@ function isAdmin(userId) {
   return adminIds.length === 0 || adminIds.includes(String(userId));
 }
 
-function normalizeTelegramUrl(rawUrl) {
-  const url = rawUrl.trim();
+function normalizeTelegramUrl(rawText) {
+  const text = rawText.trim();
 
-  if (/^https:\/\/t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(url)) return url;
-  if (/^t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(url)) return `https://${url}`;
-  if (/^@[a-zA-Z0-9_]{5,32}$/u.test(url)) return `https://t.me/${url.slice(1)}`;
-  if (/^[a-zA-Z0-9_]{5,32}$/u.test(url)) return `https://t.me/${url}`;
+  if (/^https:\/\/t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(text)) return text;
+  if (/^t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(text)) return `https://${text}`;
+  if (/^@[a-zA-Z0-9_]{5,32}$/u.test(text)) return `https://t.me/${text.slice(1)}`;
+  if (/^[a-zA-Z0-9_]{5,32}$/u.test(text)) return `https://t.me/${text}`;
 
   return null;
 }
@@ -82,22 +85,51 @@ function getChannelFallbackName(url) {
   return url.replace("https://t.me/", "@");
 }
 
-async function prepareChannelFromText(ctx, rawChannel) {
-  const url = normalizeTelegramUrl(rawChannel);
-
-  if (!url) {
-    await ctx.reply("Please send a valid channel, like t.me/channelname, @channelname, or channelname.");
-    return null;
-  }
-
-  return url;
-}
-
 async function savePromoChannel(ctx, url, rawName) {
   const name = rawName.trim().slice(0, 64) || getChannelFallbackName(url);
 
   await addPromoChannel(url, name, ctx.from.id);
   await ctx.reply(`✅ Channel added:\n${name}\n${url}`);
+}
+
+function buildPromoPanel(channels) {
+  if (channels.length === 0) {
+    return {
+      text: "📢 No promo channels added yet.\n\nSend a channel username or URL to add one.",
+      keyboard: []
+    };
+  }
+
+  const keyboard = channels.flatMap((channel) => {
+    const name = channel.name || getChannelFallbackName(channel.url);
+    const status = channel.is_active ? "✅" : "⛔";
+
+    return [
+      [{ text: `${status} ${name}`, callback_data: `promo:toggle:${channel.id}` }],
+      [
+        { text: "🔗 Open", url: channel.url },
+        { text: "🗑 Remove", callback_data: `promo:remove:${channel.id}` }
+      ]
+    ];
+  });
+
+  return {
+    text: "📢 Promo Channels\n\nTap a channel to turn it on/off, or remove it.",
+    keyboard
+  };
+}
+
+async function sendPromoPanel(ctx, mode = "reply") {
+  const channels = await listAllPromoChannels();
+  const panel = buildPromoPanel(channels);
+  const options = { reply_markup: { inline_keyboard: panel.keyboard } };
+
+  if (mode === "edit") {
+    await ctx.editMessageText(panel.text, options);
+    return;
+  }
+
+  await ctx.reply(panel.text, options);
 }
 
 async function sendPromoChannels(ctx) {
@@ -153,23 +185,30 @@ bot.command("id", async (ctx) => {
 
 bot.command("cha", async (ctx) => {
   if (!isAdmin(ctx.from.id)) {
-    await ctx.reply("You are not allowed to add promo channels.");
+    await ctx.reply("You are not allowed to manage promo channels.");
     return;
   }
 
-  const rawChannel = ctx.message.text.replace(/^\/cha(@\w+)?\s*/u, "").trim();
+  await sendPromoPanel(ctx);
+});
 
-  if (!rawChannel) {
-    pendingChannelUsers.set(ctx.from.id, { step: "channel" });
-    await ctx.reply("🔗 Send a channel: t.me/channelname, @channelname, or channelname");
+bot.action(/^promo:(toggle|remove):(\d+)$/u, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Not allowed");
     return;
   }
 
-  const url = await prepareChannelFromText(ctx, rawChannel);
-  if (!url) return;
+  const [, action, id] = ctx.match;
 
-  pendingChannelUsers.set(ctx.from.id, { step: "name", url });
-  await ctx.reply("🏷️ Now send the button name for this channel.");
+  if (action === "toggle") {
+    await togglePromoChannel(id);
+    await ctx.answerCbQuery("Updated");
+  } else {
+    await removePromoChannel(id);
+    await ctx.answerCbQuery("Removed");
+  }
+
+  await sendPromoPanel(ctx, "edit");
 });
 
 bot.command("channelcheck", async (ctx) => {
@@ -200,22 +239,23 @@ bot.on("message", async (ctx) => {
     }
 
     if (!ctx.message.text) {
-      await ctx.reply("Please send text only.");
-      return;
-    }
-
-    if (pendingChannel.step === "channel") {
-      const url = await prepareChannelFromText(ctx, ctx.message.text);
-      if (!url) return;
-
-      pendingChannelUsers.set(ctx.from.id, { step: "name", url });
-      await ctx.reply("🏷️ Now send the button name for this channel.");
+      await ctx.reply("Please send the button name as text.");
       return;
     }
 
     await savePromoChannel(ctx, pendingChannel.url, ctx.message.text);
     pendingChannelUsers.delete(ctx.from.id);
     return;
+  }
+
+  if (ctx.message.text && isAdmin(ctx.from.id)) {
+    const url = normalizeTelegramUrl(ctx.message.text);
+
+    if (url) {
+      pendingChannelUsers.set(ctx.from.id, { url });
+      await ctx.reply("🏷️ Send the button name for this channel.");
+      return;
+    }
   }
 
   const incomingVideo = getIncomingVideo(ctx.message);

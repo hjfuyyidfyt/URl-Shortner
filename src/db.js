@@ -40,6 +40,7 @@ export async function initDb() {
     );
 
     alter table promo_channels add column if not exists name text;
+    alter table promo_channels add column if not exists is_active boolean not null default true;
 
     create index if not exists promo_channels_active_idx on promo_channels (is_active, created_at);
   `);
@@ -115,8 +116,34 @@ export async function addPromoChannel(url, name, addedBy) {
 
 export async function listPromoChannels() {
   const result = await pool.query(
-    "select url, name from promo_channels where is_active = true order by created_at asc"
+    "select id, url, name, is_active from promo_channels where is_active = true order by created_at asc"
   );
 
   return result.rows;
+}
+
+export async function listAllPromoChannels() {
+  const result = await pool.query(
+    "select id, url, name, is_active from promo_channels order by created_at asc"
+  );
+
+  return result.rows;
+}
+
+export async function togglePromoChannel(id) {
+  const result = await pool.query(
+    `
+      update promo_channels
+      set is_active = not is_active
+      where id = $1
+      returning *
+    `,
+    [id]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function removePromoChannel(id) {
+  await pool.query("delete from promo_channels where id = $1", [id]);
 }
