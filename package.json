@@ -1,0 +1,16 @@
+{
+  "name": "telegram-video-share-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "node --watch src/bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "nanoid": "^5.0.9",
+    "pg": "^8.13.1",
+    "telegraf": "^4.16.3"
+  }
+}
