@@ -26,6 +26,7 @@ let botUsername;
 const adminIds = ADMIN_IDS.split(",")
   .map((id) => id.trim())
   .filter(Boolean);
+const pendingChannelUsers = new Set();
 
 function makeCode() {
   return `v_${nanoid(Number(CODE_LENGTH))}`;
@@ -72,8 +73,22 @@ function normalizeTelegramUrl(rawUrl) {
   if (/^https:\/\/t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(url)) return url;
   if (/^t\.me\/[a-zA-Z0-9_+/=-]+$/u.test(url)) return `https://${url}`;
   if (/^@[a-zA-Z0-9_]{5,32}$/u.test(url)) return `https://t.me/${url.slice(1)}`;
+  if (/^[a-zA-Z0-9_]{5,32}$/u.test(url)) return `https://t.me/${url}`;
 
   return null;
+}
+
+async function addChannelFromText(ctx, rawChannel) {
+  const url = normalizeTelegramUrl(rawChannel);
+
+  if (!url) {
+    await ctx.reply("Please send a valid channel, like t.me/channelname, @channelname, or channelname.");
+    return false;
+  }
+
+  await addPromoChannel(url, ctx.from.id);
+  await ctx.reply(`Channel added:\n${url}`);
+  return true;
 }
 
 async function sendPromoChannels(ctx) {
@@ -127,22 +142,15 @@ bot.command("cha", async (ctx) => {
     return;
   }
 
-  const rawUrl = ctx.message.text.split(/\s+/u)[1];
+  const rawChannel = ctx.message.text.replace(/^\/cha(@\w+)?\s*/u, "").trim();
 
-  if (!rawUrl) {
-    await ctx.reply("Usage: /cha https://t.me/channelname");
+  if (!rawChannel) {
+    pendingChannelUsers.add(ctx.from.id);
+    await ctx.reply("Send a channel: t.me/channelname, @channelname, or channelname");
     return;
   }
 
-  const url = normalizeTelegramUrl(rawUrl);
-
-  if (!url) {
-    await ctx.reply("Please send a valid Telegram channel URL, like https://t.me/channelname");
-    return;
-  }
-
-  await addPromoChannel(url, ctx.from.id);
-  await ctx.reply(`Channel added:\n${url}`);
+  await addChannelFromText(ctx, rawChannel);
 });
 
 bot.command("channelcheck", async (ctx) => {
@@ -163,6 +171,23 @@ bot.command("channelcheck", async (ctx) => {
 });
 
 bot.on("message", async (ctx) => {
+  if (pendingChannelUsers.has(ctx.from.id)) {
+    if (!isAdmin(ctx.from.id)) {
+      pendingChannelUsers.delete(ctx.from.id);
+      await ctx.reply("You are not allowed to add promo channels.");
+      return;
+    }
+
+    if (!ctx.message.text) {
+      await ctx.reply("Please send the channel as text: t.me/channelname, @channelname, or channelname");
+      return;
+    }
+
+    const added = await addChannelFromText(ctx, ctx.message.text);
+    if (added) pendingChannelUsers.delete(ctx.from.id);
+    return;
+  }
+
   const incomingVideo = getIncomingVideo(ctx.message);
 
   if (!incomingVideo) {
