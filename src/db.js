@@ -115,7 +115,7 @@ export async function incrementViews(code) {
 }
 
 export async function saveVideoDelivery(videoId, recipientChatId, recipientMessageId, deleteAfterMinutes) {
-  await pool.query(
+  const result = await pool.query(
     `
       insert into video_deliveries (
         video_id,
@@ -124,9 +124,12 @@ export async function saveVideoDelivery(videoId, recipientChatId, recipientMessa
         delete_at
       )
       values ($1, $2, $3, now() + ($4 * interval '1 minute'))
+      returning *
     `,
     [videoId, recipientChatId, recipientMessageId, deleteAfterMinutes]
   );
+
+  return result.rows[0];
 }
 
 export async function listDueVideoDeliveries(limit = 50) {

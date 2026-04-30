@@ -109,6 +109,39 @@ function getDeleteAfterMinutes(video) {
   return 30;
 }
 
+async function deleteDeliveredVideo(delivery) {
+  try {
+    await bot.telegram.deleteMessage(
+      delivery.recipient_chat_id,
+      Number(delivery.recipient_message_id)
+    );
+  } catch (error) {
+    console.error("Delivery deleteMessage failed", {
+      deliveryId: delivery.id,
+      chatId: delivery.recipient_chat_id,
+      messageId: delivery.recipient_message_id,
+      error
+    });
+  }
+
+  await deleteVideoDeliveryById(delivery.id);
+}
+
+function scheduleDeliveryDeletion(delivery) {
+  const deleteAt = new Date(delivery.delete_at).getTime();
+  const delay = Math.max(1000, deleteAt - Date.now());
+  const maxDelay = 2147483647;
+
+  setTimeout(() => {
+    deleteDeliveredVideo(delivery).catch((error) => {
+      console.error("Scheduled delivery cleanup failed", {
+        deliveryId: delivery.id,
+        error
+      });
+    });
+  }, Math.min(delay, maxDelay));
+}
+
 async function savePromoChannel(ctx, url, rawName) {
   const name = rawName.trim().slice(0, 64) || getChannelFallbackName(url);
 
@@ -201,12 +234,13 @@ bot.start(async (ctx) => {
   );
   const deleteAfterMinutes = getDeleteAfterMinutes(video);
 
-  await saveVideoDelivery(
+  const delivery = await saveVideoDelivery(
     video.id,
     ctx.chat.id,
     delivered.message_id,
     deleteAfterMinutes
   );
+  scheduleDeliveryDeletion(delivery);
   await ctx.reply(`This video will delete after ${deleteAfterMinutes} minutes.`);
   await sendPromoChannels(ctx);
   await incrementViews(payload);
@@ -379,19 +413,7 @@ async function cleanupDueVideoDeliveries() {
   const dueDeliveries = await listDueVideoDeliveries();
 
   for (const delivery of dueDeliveries) {
-    try {
-      await bot.telegram.deleteMessage(
-        delivery.recipient_chat_id,
-        Number(delivery.recipient_message_id)
-      );
-    } catch (error) {
-      console.error("Delivery cleanup deleteMessage failed", {
-        deliveryId: delivery.id,
-        error
-      });
-    }
-
-    await deleteVideoDeliveryById(delivery.id);
+    await deleteDeliveredVideo(delivery);
   }
 }
 
@@ -399,7 +421,7 @@ setInterval(() => {
   cleanupDueVideoDeliveries().catch((error) => {
     console.error("Delivery cleanup failed", error);
   });
-}, 60000);
+}, 15000);
 
 cleanupDueVideoDeliveries().catch((error) => {
   console.error("Delivery cleanup failed", error);
