@@ -23,12 +23,18 @@ export async function initDb() {
       mime_type text,
       file_name text,
       caption text,
+      delete_after_minutes integer,
+      expires_at timestamptz,
       views bigint not null default 0,
       created_at timestamptz not null default now()
     );
 
+    alter table videos add column if not exists delete_after_minutes integer;
+    alter table videos add column if not exists expires_at timestamptz;
+
     create index if not exists videos_uploader_id_idx on videos (uploader_id);
     create index if not exists videos_created_at_idx on videos (created_at desc);
+    create index if not exists videos_expires_at_idx on videos (expires_at);
 
     create table if not exists promo_channels (
       id bigserial primary key,
@@ -61,9 +67,11 @@ export async function saveVideo(video) {
         telegram_file_unique_id,
         mime_type,
         file_name,
-        caption
+        caption,
+        delete_after_minutes,
+        expires_at
       )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now() + ($13 * interval '1 minute'))
       returning *
     `,
     [
@@ -78,7 +86,8 @@ export async function saveVideo(video) {
       video.telegramFileUniqueId,
       video.mimeType,
       video.fileName,
-      video.caption
+      video.caption,
+      video.deleteAfterMinutes
     ]
   );
 
@@ -96,6 +105,36 @@ export async function getVideoByCode(code) {
 
 export async function incrementViews(code) {
   await pool.query("update videos set views = views + 1 where code = $1", [code]);
+}
+
+export function isVideoExpired(video) {
+  return video?.expires_at && new Date(video.expires_at).getTime() <= Date.now();
+}
+
+export function getRemainingMinutes(video) {
+  if (!video?.expires_at) return null;
+
+  const remainingMs = new Date(video.expires_at).getTime() - Date.now();
+  return Math.max(1, Math.ceil(remainingMs / 60000));
+}
+
+export async function listExpiredVideos(limit = 50) {
+  const result = await pool.query(
+    `
+      select id, storage_chat_id, storage_message_id
+      from videos
+      where expires_at is not null and expires_at <= now()
+      order by expires_at asc
+      limit $1
+    `,
+    [limit]
+  );
+
+  return result.rows;
+}
+
+export async function deleteVideoById(id) {
+  await pool.query("delete from videos where id = $1", [id]);
 }
 
 export async function addPromoChannel(url, name, addedBy) {

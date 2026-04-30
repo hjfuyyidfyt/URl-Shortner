@@ -3,10 +3,14 @@ import { Telegraf } from "telegraf";
 import { nanoid } from "nanoid";
 import {
   addPromoChannel,
+  deleteVideoById,
+  getRemainingMinutes,
   getVideoByCode,
   incrementViews,
   initDb,
+  isVideoExpired,
   listAllPromoChannels,
+  listExpiredVideos,
   listPromoChannels,
   removePromoChannel,
   saveVideo,
@@ -30,6 +34,7 @@ const adminIds = ADMIN_IDS.split(",")
   .map((id) => id.trim())
   .filter(Boolean);
 const pendingChannelUsers = new Map();
+const pendingVideoUploads = new Map();
 
 function makeCode() {
   return `v_${nanoid(Number(CODE_LENGTH))}`;
@@ -83,6 +88,16 @@ function normalizeTelegramUrl(rawText) {
 
 function getChannelFallbackName(url) {
   return url.replace("https://t.me/", "@");
+}
+
+function parseDeleteMinutes(text) {
+  const minutes = Number(text.trim());
+
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 43200) {
+    return null;
+  }
+
+  return minutes;
 }
 
 async function savePromoChannel(ctx, url, rawName) {
@@ -170,11 +185,29 @@ bot.start(async (ctx) => {
     return;
   }
 
+  if (isVideoExpired(video)) {
+    await ctx.reply("This video has been deleted.");
+    try {
+      await ctx.telegram.deleteMessage(
+        video.storage_chat_id,
+        Number(video.storage_message_id)
+      );
+    } catch (error) {
+      console.error("Expired video deleteMessage failed", {
+        videoId: video.id,
+        error
+      });
+    }
+    await deleteVideoById(video.id);
+    return;
+  }
+
   await ctx.telegram.copyMessage(
     ctx.chat.id,
     video.storage_chat_id,
     Number(video.storage_message_id)
   );
+  await ctx.reply(`This video will delete after ${getRemainingMinutes(video)} minutes.`);
   await sendPromoChannels(ctx);
   await incrementViews(payload);
 });
@@ -229,6 +262,31 @@ bot.command("channelcheck", async (ctx) => {
 });
 
 bot.on("message", async (ctx) => {
+  const pendingVideo = pendingVideoUploads.get(ctx.from.id);
+
+  if (pendingVideo) {
+    if (!ctx.message.text) {
+      await ctx.reply("Please send the delete time in minutes.");
+      return;
+    }
+
+    const deleteAfterMinutes = parseDeleteMinutes(ctx.message.text);
+
+    if (!deleteAfterMinutes) {
+      await ctx.reply("Please send a valid number from 1 to 43200 minutes.");
+      return;
+    }
+
+    await saveVideo({
+      ...pendingVideo,
+      deleteAfterMinutes
+    });
+
+    pendingVideoUploads.delete(ctx.from.id);
+    await ctx.reply(`Upload complete.\n\nThis video will delete after ${deleteAfterMinutes} minutes.\n\nShare link:\n${shareUrl(pendingVideo.code)}`);
+    return;
+  }
+
   const pendingChannel = pendingChannelUsers.get(ctx.from.id);
 
   if (pendingChannel) {
@@ -285,7 +343,7 @@ bot.on("message", async (ctx) => {
     throw error;
   }
 
-  await saveVideo({
+  pendingVideoUploads.set(ctx.from.id, {
     code,
     uploaderId: ctx.from.id,
     uploaderUsername: ctx.from.username ?? null,
@@ -300,7 +358,7 @@ bot.on("message", async (ctx) => {
     caption: ctx.message.caption ?? null
   });
 
-  await ctx.reply(`Upload complete.\n\nShare link:\n${shareUrl(code)}`);
+  await ctx.reply("How many minutes after upload should this video be deleted? Send a number, like 30.");
 });
 
 bot.catch((error, ctx) => {
@@ -316,6 +374,36 @@ botUsername = me.username;
 await bot.launch();
 
 console.log(`Bot is running as @${botUsername}`);
+
+async function cleanupExpiredVideos() {
+  const expiredVideos = await listExpiredVideos();
+
+  for (const video of expiredVideos) {
+    try {
+      await bot.telegram.deleteMessage(
+        video.storage_chat_id,
+        Number(video.storage_message_id)
+      );
+    } catch (error) {
+      console.error("Expired video cleanup deleteMessage failed", {
+        videoId: video.id,
+        error
+      });
+    }
+
+    await deleteVideoById(video.id);
+  }
+}
+
+setInterval(() => {
+  cleanupExpiredVideos().catch((error) => {
+    console.error("Expired video cleanup failed", error);
+  });
+}, 60000);
+
+cleanupExpiredVideos().catch((error) => {
+  console.error("Expired video cleanup failed", error);
+});
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
