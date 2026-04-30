@@ -3,17 +3,16 @@ import { Telegraf } from "telegraf";
 import { nanoid } from "nanoid";
 import {
   addPromoChannel,
-  deleteVideoById,
-  getRemainingMinutes,
+  deleteVideoDeliveryById,
   getVideoByCode,
   incrementViews,
   initDb,
-  isVideoExpired,
   listAllPromoChannels,
-  listExpiredVideos,
+  listDueVideoDeliveries,
   listPromoChannels,
   removePromoChannel,
   saveVideo,
+  saveVideoDelivery,
   togglePromoChannel
 } from "./db.js";
 
@@ -98,6 +97,16 @@ function parseDeleteMinutes(text) {
   }
 
   return minutes;
+}
+
+function getDeleteAfterMinutes(video) {
+  const minutes = Number(video.delete_after_minutes);
+
+  if (Number.isInteger(minutes) && minutes > 0) {
+    return minutes;
+  }
+
+  return 30;
 }
 
 async function savePromoChannel(ctx, url, rawName) {
@@ -185,29 +194,20 @@ bot.start(async (ctx) => {
     return;
   }
 
-  if (isVideoExpired(video)) {
-    await ctx.reply("This video has been deleted.");
-    try {
-      await ctx.telegram.deleteMessage(
-        video.storage_chat_id,
-        Number(video.storage_message_id)
-      );
-    } catch (error) {
-      console.error("Expired video deleteMessage failed", {
-        videoId: video.id,
-        error
-      });
-    }
-    await deleteVideoById(video.id);
-    return;
-  }
-
-  await ctx.telegram.copyMessage(
+  const delivered = await ctx.telegram.copyMessage(
     ctx.chat.id,
     video.storage_chat_id,
     Number(video.storage_message_id)
   );
-  await ctx.reply(`This video will delete after ${getRemainingMinutes(video)} minutes.`);
+  const deleteAfterMinutes = getDeleteAfterMinutes(video);
+
+  await saveVideoDelivery(
+    video.id,
+    ctx.chat.id,
+    delivered.message_id,
+    deleteAfterMinutes
+  );
+  await ctx.reply(`This video will delete after ${deleteAfterMinutes} minutes.`);
   await sendPromoChannels(ctx);
   await incrementViews(payload);
 });
@@ -375,34 +375,34 @@ await bot.launch();
 
 console.log(`Bot is running as @${botUsername}`);
 
-async function cleanupExpiredVideos() {
-  const expiredVideos = await listExpiredVideos();
+async function cleanupDueVideoDeliveries() {
+  const dueDeliveries = await listDueVideoDeliveries();
 
-  for (const video of expiredVideos) {
+  for (const delivery of dueDeliveries) {
     try {
       await bot.telegram.deleteMessage(
-        video.storage_chat_id,
-        Number(video.storage_message_id)
+        delivery.recipient_chat_id,
+        Number(delivery.recipient_message_id)
       );
     } catch (error) {
-      console.error("Expired video cleanup deleteMessage failed", {
-        videoId: video.id,
+      console.error("Delivery cleanup deleteMessage failed", {
+        deliveryId: delivery.id,
         error
       });
     }
 
-    await deleteVideoById(video.id);
+    await deleteVideoDeliveryById(delivery.id);
   }
 }
 
 setInterval(() => {
-  cleanupExpiredVideos().catch((error) => {
-    console.error("Expired video cleanup failed", error);
+  cleanupDueVideoDeliveries().catch((error) => {
+    console.error("Delivery cleanup failed", error);
   });
 }, 60000);
 
-cleanupExpiredVideos().catch((error) => {
-  console.error("Expired video cleanup failed", error);
+cleanupDueVideoDeliveries().catch((error) => {
+  console.error("Delivery cleanup failed", error);
 });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
