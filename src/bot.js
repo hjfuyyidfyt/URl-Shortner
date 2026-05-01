@@ -3,14 +3,20 @@ import { Telegraf } from "telegraf";
 import { nanoid } from "nanoid";
 import {
   addPromoChannel,
-  deleteVideoDeliveryById,
+  addStatsExcludedUser,
+  getStats,
+  getTopVideos,
+  getTopViewers,
   getVideoByCode,
   incrementViews,
   initDb,
   listAllPromoChannels,
   listDueVideoDeliveries,
   listPromoChannels,
+  listStatsExcludedUsers,
+  markVideoDeliveryDeleted,
   removePromoChannel,
+  removeStatsExcludedUser,
   saveVideo,
   saveVideoDelivery,
   togglePromoChannel
@@ -34,6 +40,7 @@ const adminIds = ADMIN_IDS.split(",")
   .filter(Boolean);
 const pendingChannelUsers = new Map();
 const pendingVideoUploads = new Map();
+const pendingStatsExcludeUsers = new Set();
 
 function makeCode() {
   return `v_${nanoid(Number(CODE_LENGTH))}`;
@@ -124,7 +131,7 @@ async function deleteDeliveredVideo(delivery) {
     });
   }
 
-  await deleteVideoDeliveryById(delivery.id);
+  await markVideoDeliveryDeleted(delivery.id);
 }
 
 function scheduleDeliveryDeletion(delivery) {
@@ -147,6 +154,22 @@ async function savePromoChannel(ctx, url, rawName) {
 
   await addPromoChannel(url, name, ctx.from.id);
   await ctx.reply(`✅ Channel added:\n${name}\n${url}`);
+}
+
+function formatUserLabel(user) {
+  if (user.username) return `@${user.username}`;
+  if (user.first_name) return user.first_name;
+  return String(user.user_id);
+}
+
+function parseUserId(text) {
+  const userId = text.trim();
+
+  if (!/^\d{4,20}$/u.test(userId)) {
+    return null;
+  }
+
+  return userId;
 }
 
 function buildPromoPanel(channels) {
@@ -176,6 +199,28 @@ function buildPromoPanel(channels) {
   };
 }
 
+function buildStatsExcludePanel(users) {
+  if (users.length === 0) {
+    return {
+      text: "🚫 Stats Excluded Users\n\nNo users excluded yet.\n\nSend a Telegram user ID to exclude.",
+      keyboard: []
+    };
+  }
+
+  const lines = users.map((user, index) => (
+    `${index + 1}. ${formatUserLabel(user)} - ${user.user_id}`
+  ));
+  const keyboard = users.map((user) => ([{
+    text: `Remove ${formatUserLabel(user)}`,
+    callback_data: `unsmt:remove:${user.user_id}`
+  }]));
+
+  return {
+    text: ["🚫 Stats Excluded Users", "", ...lines, "", "Send a Telegram user ID to exclude."].join("\n"),
+    keyboard
+  };
+}
+
 async function sendPromoPanel(ctx, mode = "reply") {
   const channels = await listAllPromoChannels();
   const panel = buildPromoPanel(channels);
@@ -187,6 +232,72 @@ async function sendPromoPanel(ctx, mode = "reply") {
   }
 
   await ctx.reply(panel.text, options);
+}
+
+async function sendStatsExcludePanel(ctx, mode = "reply") {
+  const users = await listStatsExcludedUsers();
+  const panel = buildStatsExcludePanel(users);
+  const options = { reply_markup: { inline_keyboard: panel.keyboard } };
+
+  if (mode === "edit") {
+    await ctx.editMessageText(panel.text, options);
+    return;
+  }
+
+  await ctx.reply(panel.text, options);
+}
+
+async function addStatsExcludeFromText(ctx, text) {
+  const userId = parseUserId(text);
+
+  if (!userId) {
+    await ctx.reply("Please send a valid Telegram user ID. Use /id from that account to get it.");
+    return false;
+  }
+
+  await addStatsExcludedUser(userId, ctx.from.id);
+  await ctx.reply(`User excluded from stats:\n${userId}`);
+  return true;
+}
+
+function formatNumber(value) {
+  return Number(value ?? 0).toLocaleString("en-US");
+}
+
+async function sendStats(ctx) {
+  const [stats, topViewers, topVideos] = await Promise.all([
+    getStats(),
+    getTopViewers(10),
+    getTopVideos(5)
+  ]);
+
+  const viewerLines = topViewers.length === 0
+    ? ["No viewer data yet."]
+    : topViewers.map((viewer, index) => (
+      `${index + 1}. ${formatUserLabel(viewer)} - ${formatNumber(viewer.unique_videos)} videos (${formatNumber(viewer.total_serves)} serves)`
+    ));
+
+  const videoLines = topVideos.length === 0
+    ? ["No video data yet."]
+    : topVideos.map((video, index) => (
+      `${index + 1}. ${video.code} - ${formatNumber(video.total_serves)} serves / ${formatNumber(video.unique_viewers)} viewers`
+    ));
+
+  await ctx.reply([
+    "📊 Bot Stats",
+    "",
+    `Total videos uploaded: ${formatNumber(stats.total_uploaded)}`,
+    `Total video serves: ${formatNumber(stats.total_serves)}`,
+    `Unique user-video serves: ${formatNumber(stats.unique_user_video_serves)}`,
+    `Repeat serves: ${formatNumber(stats.repeat_serves)}`,
+    `Total viewers: ${formatNumber(stats.total_viewers)}`,
+    "",
+    "👥 Top viewers",
+    ...viewerLines,
+    "",
+    "🎬 Top videos",
+    ...videoLines
+  ].join("\n"));
 }
 
 async function sendPromoChannels(ctx) {
@@ -236,6 +347,7 @@ bot.start(async (ctx) => {
 
   const delivery = await saveVideoDelivery(
     video.id,
+    ctx.from,
     ctx.chat.id,
     delivered.message_id,
     deleteAfterMinutes
@@ -259,6 +371,32 @@ bot.command("cha", async (ctx) => {
   await sendPromoPanel(ctx);
 });
 
+bot.command("smt", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("You are not allowed to view stats.");
+    return;
+  }
+
+  await sendStats(ctx);
+});
+
+bot.command("unsmt", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.reply("You are not allowed to manage stats exclusions.");
+    return;
+  }
+
+  const userId = ctx.message.text.replace(/^\/unsmt(@\w+)?\s*/u, "").trim();
+
+  if (userId) {
+    await addStatsExcludeFromText(ctx, userId);
+    return;
+  }
+
+  pendingStatsExcludeUsers.add(ctx.from.id);
+  await sendStatsExcludePanel(ctx);
+});
+
 bot.action(/^promo:(toggle|remove):(\d+)$/u, async (ctx) => {
   if (!isAdmin(ctx.from.id)) {
     await ctx.answerCbQuery("Not allowed");
@@ -276,6 +414,19 @@ bot.action(/^promo:(toggle|remove):(\d+)$/u, async (ctx) => {
   }
 
   await sendPromoPanel(ctx, "edit");
+});
+
+bot.action(/^unsmt:remove:(\d+)$/u, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    await ctx.answerCbQuery("Not allowed");
+    return;
+  }
+
+  const [, userId] = ctx.match;
+
+  await removeStatsExcludedUser(userId);
+  await ctx.answerCbQuery("Removed");
+  await sendStatsExcludePanel(ctx, "edit");
 });
 
 bot.command("channelcheck", async (ctx) => {
@@ -296,6 +447,23 @@ bot.command("channelcheck", async (ctx) => {
 });
 
 bot.on("message", async (ctx) => {
+  if (pendingStatsExcludeUsers.has(ctx.from.id)) {
+    if (!isAdmin(ctx.from.id)) {
+      pendingStatsExcludeUsers.delete(ctx.from.id);
+      await ctx.reply("You are not allowed to manage stats exclusions.");
+      return;
+    }
+
+    if (!ctx.message.text) {
+      await ctx.reply("Please send the Telegram user ID as text.");
+      return;
+    }
+
+    const added = await addStatsExcludeFromText(ctx, ctx.message.text);
+    if (added) pendingStatsExcludeUsers.delete(ctx.from.id);
+    return;
+  }
+
   const pendingVideo = pendingVideoUploads.get(ctx.from.id);
 
   if (pendingVideo) {

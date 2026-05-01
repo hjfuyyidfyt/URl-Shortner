@@ -48,5 +48,6 @@ Railway can run it with the existing `npm start` script.
 - Each upload has its own inbox-delete time in minutes.
 - Bot username is detected automatically from `BOT_TOKEN`.
 - Add promo channels by sending `t.me/channelname`, `@channelname`, or `channelname`, then send the button name. Use `/cha` to manage promo channels and turn them on/off or remove them.
+- Use `/smt` for admin stats. Use `/unsmt` to exclude test/admin users from stats.
 - Telegram deep links cannot open the video directly before the user starts the bot. The link opens the bot, then the bot sends the video.
 - If a database URL or bot token was shared publicly, rotate it before deployment.
